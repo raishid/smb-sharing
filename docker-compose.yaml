@@ -1,0 +1,24 @@
+services:
+  smb-printer-bridge:
+    build: .
+    container_name: smb-printer-bridge
+    restart: unless-stopped
+    environment:
+      - DP_IP=192.168.15.120
+      - DP_QUEUE=comandas1
+    networks:
+      lan_network:
+        ipv4_address: 192.168.15.121  # IP fija del contenedor en LAN
+    volumes:
+      - ./smb.conf:/etc/samba/smb.conf
+      - ./cups:/var/spool/cups
+
+networks:
+  lan_network:
+    driver: macvlan
+    driver_opts:
+      parent: eth0  # Cambia por tu interfaz de LAN
+    ipam:
+      config:
+        - subnet: 192.168.15.0/24
+          gateway: 192.168.15.1
