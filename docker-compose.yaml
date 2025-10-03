@@ -1,24 +1,17 @@
 services:
-  smb-printer-bridge:
+  smbprinter:
     build: .
-    container_name: smb-printer-bridge
+    container_name: smbprinter
     restart: unless-stopped
     environment:
-      - DP_IP=192.168.15.120
-      - DP_QUEUE=comandas1
+      - NETBIOS_NAME=${NETBIOS_NAME:-printserver}
+      - PRINTERS=${PRINTERS}
     networks:
-      lan_network:
-        ipv4_address: 192.168.15.121  # IP fija del contenedor en LAN
-    volumes:
-      - ./smb.conf:/etc/samba/smb.conf
-      - ./cups:/var/spool/cups
+      macvlan_lan:
+        ipv4_address: ${IP_CONTAINER}
+    dns:
+      - ${DNS_SERVER}
 
 networks:
-  lan_network:
-    driver: macvlan
-    driver_opts:
-      parent: eth0  # Cambia por tu interfaz de LAN
-    ipam:
-      config:
-        - subnet: 192.168.15.0/24
-          gateway: 192.168.15.1
+  macvlan_lan:
+    external: true

@@ -1,26 +1,27 @@
 FROM ubuntu:22.04
 
-# Instalar dependencias
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Paquetes necesarios (Samba + CUPS). Puedes quitar printer-driver-all si quieres achicar la imagen.
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    samba samba-common smbclient cups cups-client cups-bsd printer-driver-all \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+      samba samba-common smbclient \
+      cups cups-client cups-bsd \
+      printer-driver-all \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copiar configuración de Samba
-COPY smb.conf /etc/samba/smb.conf
+# Crear rutas base (el entrypoint las vuelve a asegurar igual)
+RUN mkdir -p /var/spool/cups /var/spool/samba /var/log/cups /var/log/samba \
+    /var/lib/samba/private /var/cache/samba /run/samba
 
-# Crear directorio para spooler
-RUN mkdir -p /var/spool/samba
-RUN chown -R root:root /var/spool/samba
+# cupsd.conf (opcional, si tienes uno personalizado)
+COPY cupsd.conf /etc/cups/cupsd.conf
 
-# Copiar entrypoint
+# Entrypoint dinámico
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-COPY cupsd.conf /etc/cups/cupsd.conf
-
-# Exponer puertos SMB y web de CUPS
+# Puertos (con macvlan no hacen falta para exponer, pero no estorban)
 EXPOSE 139 445 631
 
-# CMD
 CMD ["/entrypoint.sh"]
