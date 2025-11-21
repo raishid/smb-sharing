@@ -2,7 +2,7 @@ services:
   smbprinter:
     build: .
     container_name: smbprinter
-    restart: unless-stopped
+    restart: always
     environment:
       - NETBIOS_NAME=${NETBIOS_NAME:-printserver}
       - PRINTERS=${PRINTERS}
