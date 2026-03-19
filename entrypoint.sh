@@ -61,6 +61,9 @@ cat > "$SMB_CONF" <<EOF
    server string = Puente DP-301P+
    security = user
    map to guest = Bad User
+   disable netbios = yes
+   dns proxy = no
+   wins support = no
 
    # Integración con CUPS
    printing = cups
@@ -101,4 +104,4 @@ if ! testparm -s "$SMB_CONF" >/dev/null 2>&1; then
 fi
 
 echo "==== Lanzando smbd (foreground) ===="
-exec /usr/sbin/smbd -i --debug-stdout -s "$SMB_CONF"
+exec /usr/sbin/smbd --foreground --no-process-group -s "$SMB_CONF"
