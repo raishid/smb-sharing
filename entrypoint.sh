@@ -55,14 +55,6 @@ for item in "${ITEMS[@]}"; do
     exit 1
   fi
   NAMES+=("$NAME"); IPs+=("$IP"); QUEUES+=("$Q")
-
-  # Agregar entrada en /etc/hosts para evitar reverse DNS lookup
-  # del IP de la impresora (causa del delay de ~30s si no hay PTR en DNS)
-  if ! grep -q "^$IP " /etc/hosts 2>/dev/null; then
-    echo "$IP $NAME-printer" >> /etc/hosts
-    echo "Agregado $IP $NAME-printer a /etc/hosts"
-  fi
-
   configure_printer "$NAME" "$IP" "$Q"
 done
 
@@ -82,8 +74,6 @@ cat > "$SMB_CONF" <<EOF
    disable netbios = yes
    dns proxy = no
    wins support = no
-   hostname lookups = no
-   name resolve order = host bcast
 
    ntlm auth = ntlmv1-permitted
    lanman auth = yes
