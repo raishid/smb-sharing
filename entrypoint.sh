@@ -23,10 +23,20 @@ cupsd || { echo "ERROR: no pudo iniciar cupsd"; exit 1; }
 sleep 2
 
 configure_printer () {
-  local NAME="$1" IP="$2" QUEUE="$3"
-  echo "==== Configurando impresora LPD: $IP / $QUEUE como cola '$NAME' ===="
+  local NAME="$1" IP="$2" QUEUE="$3" URI
+
+  # Si el tercer campo es numérico se interpreta como puerto → AppSocket
+  # Si es texto se interpreta como cola LPD
+  if [[ "$QUEUE" =~ ^[0-9]+$ ]]; then
+    URI="socket://$IP:$QUEUE"
+    echo "==== Configurando impresora AppSocket: $URI como cola '$NAME' ===="
+  else
+    URI="lpd://$IP/$QUEUE"
+    echo "==== Configurando impresora LPD: $URI como cola '$NAME' ===="
+  fi
+
   lpstat -p "$NAME" >/dev/null 2>&1 && lpadmin -x "$NAME" || true
-  lpadmin -p "$NAME" -E -v "lpd://$IP/$QUEUE" -m raw
+  lpadmin -p "$NAME" -E -v "$URI" -m raw
   lpadmin -p "$NAME" -o printer-error-policy=retry-job
   if ! lpstat -p | awk '{print $2}' | grep -qx "$NAME"; then
     echo "ERROR: no se creó la cola CUPS '$NAME'." >&2
