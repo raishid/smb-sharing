@@ -64,6 +64,8 @@ cat > "$SMB_CONF" <<EOF
    disable netbios = yes
    dns proxy = no
    wins support = no
+   hostname lookups = no
+   name resolve order = host bcast
 
    ntlm auth = ntlmv1-permitted
    lanman auth = yes
