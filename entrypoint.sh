@@ -77,8 +77,11 @@ cat > "$SMB_CONF" <<EOF
 
    ntlm auth = ntlmv1-permitted
    lanman auth = yes
-   server min protocol = SMB2_02
+   server min protocol = NT1
    server max protocol = SMB3
+
+   max connections = 100
+   max smbd processes = 100
 
    printing = cups
    printcap name = cups
