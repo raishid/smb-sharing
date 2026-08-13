@@ -8,6 +8,7 @@ RUN apt-get update && \
       samba samba-common smbclient \
       cups cups-client cups-bsd \
       printer-driver-all \
+      tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Crear rutas base (el entrypoint las vuelve a asegurar igual)

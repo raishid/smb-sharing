@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print Server — Colas e historial</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --border: #dfe3e8;
+    --text: #1c2126;
+    --muted: #6b7480;
+    --accent: #2563eb;
+    --ok: #157f3d;
+    --warn: #a86a00;
+    --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --card: #1c2024;
+      --border: #2c3238;
+      --text: #e6e9ec;
+      --muted: #98a1ab;
+      --accent: #6f9dff;
+      --ok: #4ec27a;
+      --warn: #e0a63c;
+      --err: #f2705f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 28px 0 12px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .06em; }
+  .sub { color: var(--muted); margin: 0 0 8px; }
+  .cards { display: grid; gap: 12px;
+           grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 8px; padding: 14px 16px; }
+  .card header { display: flex; align-items: center; justify-content: space-between;
+                 gap: 8px; margin-bottom: 6px; }
+  .card h3 { margin: 0; font-size: 16px; }
+  .uri { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace;
+         word-break: break-all; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 6px; vertical-align: middle; }
+  .s-idle .dot, .st-completed { color: var(--ok); }
+  .s-idle .dot { background: var(--ok); }
+  .s-processing .dot { background: var(--accent); }
+  .s-processing { color: var(--accent); }
+  .s-stopped .dot { background: var(--err); }
+  .s-stopped, .st-aborted, .st-canceled { color: var(--err); }
+  .s-unknown .dot { background: var(--muted); }
+  .st-processing, .st-pending, .st-held, .st-stopped { color: var(--warn); }
+  .reason { color: var(--warn); font-size: 12px; margin-top: 4px; }
+  .qjobs { margin: 10px 0 0; padding: 0; list-style: none;
+           border-top: 1px solid var(--border); }
+  .qjobs li { display: flex; justify-content: space-between; gap: 10px;
+              padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .qjobs .meta { color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  form.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+                 margin-bottom: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  input, select, button {
+    font: inherit; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
+  .table-wrap { overflow-x: auto; background: var(--card);
+                border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+           white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); text-transform: uppercase;
+       letter-spacing: .04em; }
+  td.doc { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+  tr:last-child td { border-bottom: none; }
+  .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px;
+           color: var(--muted); }
+  .error { background: var(--card); border: 1px solid var(--err); color: var(--err);
+           border-radius: 8px; padding: 12px 14px; }
+</style>
+</head>
+<body>
+
+<h1>Print Server</h1>
+<p class="sub">Colas de impresión e historial de trabajos · actualiza cada 5 s</p>
+
+<h2>Colas</h2>
+<div id="queues" class="cards"></div>
+
+<h2>Historial</h2>
+<form class="filters" id="filters" onsubmit="return false;">
+  <div><label for="f-printer">Impresora</label>
+    <select id="f-printer"><option value="">Todas</option></select></div>
+  <div><label for="f-user">Usuario</label>
+    <select id="f-user"><option value="">Todos</option></select></div>
+  <div><label for="f-state">Estado</label>
+    <select id="f-state"><option value="">Todos</option></select></div>
+  <div><label for="f-from">Desde</label><input type="date" id="f-from"></div>
+  <div><label for="f-to">Hasta</label><input type="date" id="f-to"></div>
+  <div><label for="f-q">Buscar</label>
+    <input type="search" id="f-q" placeholder="documento, equipo, usuario"></div>
+  <button class="primary" id="btn-apply">Filtrar</button>
+  <button id="btn-clear">Limpiar</button>
+  <button id="btn-csv">Exportar CSV</button>
+</form>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th>Fecha</th><th>Impresora</th><th>Usuario</th><th>Equipo</th>
+      <th>Documento</th><th>Tamaño</th><th>Pág.</th><th>Estado</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<div class="pager">
+  <button id="prev">◀ Anterior</button>
+  <span id="pageinfo"></span>
+  <button id="next">Siguiente ▶</button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let page = 1;
+
+const fmtDate = (epoch) =>
+  epoch ? new Date(epoch * 1000).toLocaleString() : "—";
+const fmtSize = (kb) =>
+  (kb === null || kb === undefined) ? "—"
+    : kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB";
+const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- Colas en vivo -------------------------------------------------------
+async function loadQueues() {
+  const box = $("queues");
+  let data;
+  try {
+    const res = await fetch("/api/queues");
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+  } catch (err) {
+    box.innerHTML = `<div class="error">${esc(err.message)}</div>`;
+    return;
+  }
+  if (!data.printers.length) {
+    box.innerHTML = `<p class="empty">No hay impresoras configuradas en CUPS.</p>`;
+    return;
+  }
+  box.innerHTML = data.printers.map((p) => `
+    <div class="card">
+      <header>
+        <h3>${esc(p.name)}</h3>
+        <span class="s-${p.state}"><span class="dot"></span>${esc(p.state)}</span>
+      </header>
+      <div class="uri">${esc(p.device_uri)}</div>
+      ${p.state_message ? `<div class="reason">${esc(p.state_message)}</div>` : ""}
+      ${!p.accepting ? `<div class="reason">No acepta trabajos nuevos</div>` : ""}
+      ${p.jobs.length ? `<ul class="qjobs">${p.jobs.map((j) => `
+        <li>
+          <span>${esc(j.title)}<br>
+            <span class="meta">#${j.job_id} · ${esc(j.user)} · ${esc(j.host)} ·
+            ${esc(j.state)} · ${fmtDate(j.created_at)}</span>
+          </span>
+          <button class="link" onclick="cancelJob(${j.job_id})">Cancelar</button>
+        </li>`).join("")}</ul>`
+        : `<p class="empty">Sin trabajos en cola</p>`}
+      <div style="margin-top:10px">
+        <button class="link" onclick="printerAction('${esc(p.name)}','${
+          p.state === "stopped" ? "enable" : "disable"}')">${
+          p.state === "stopped" ? "Reanudar" : "Pausar"}</button>
+        <button class="link" onclick="printerAction('${esc(p.name)}','purge')">Vaciar cola</button>
+      </div>
+    </div>`).join("");
+}
+
+async function cancelJob(id) {
+  if (!confirm(`¿Cancelar el trabajo #${id}?`)) return;
+  const res = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+  if (!res.ok) alert("Error: " + ((await res.json()).error || res.statusText));
+  loadQueues();
+}
+
+async function printerAction(name, action) {
+  const texts = { enable: "reanudar", disable: "pausar", purge: "vaciar la cola de" };
+  if (!confirm(`¿Seguro que querés ${texts[action]} ${name}?`)) return;
+  const res = await fetch(`/api/printers/${encodeURIComponent(name)}/${action}`,
+                          { method: "POST" });
+  if (!res.ok) alert("Error: " + ((await res.json()).error || res.statusText));
+  loadQueues();
+}
+
+// ---- Historial -----------------------------------------------------------
+function queryParams() {
+  const p = new URLSearchParams();
+  if ($("f-printer").value) p.set("printer", $("f-printer").value);
+  if ($("f-user").value) p.set("user", $("f-user").value);
+  if ($("f-state").value) p.set("state", $("f-state").value);
+  if ($("f-from").value)
+    p.set("from", Math.floor(new Date($("f-from").value + "T00:00:00") / 1000));
+  if ($("f-to").value)
+    p.set("to", Math.floor(new Date($("f-to").value + "T23:59:59") / 1000));
+  if ($("f-q").value.trim()) p.set("q", $("f-q").value.trim());
+  return p;
+}
+
+async function loadJobs() {
+  const p = queryParams();
+  p.set("page", page);
+  const data = await (await fetch("/api/jobs?" + p)).json();
+  $("rows").innerHTML = data.jobs.length ? data.jobs.map((j) => `
+    <tr>
+      <td>${fmtDate(j.created_at)}</td>
+      <td>${esc(j.printer)}</td>
+      <td>${esc(j.user)}</td>
+      <td>${esc(j.host)}</td>
+      <td class="doc" title="${esc(j.title)}">${esc(j.title)}</td>
+      <td>${fmtSize(j.size_kb)}</td>
+      <td>${j.pages ?? j.impressions ?? "—"}</td>
+      <td class="st-${j.state_label}">${esc(j.state_label)}</td>
+    </tr>`).join("")
+    : `<tr><td colspan="8" class="empty">Sin resultados</td></tr>`;
+
+  const pages = Math.max(1, Math.ceil(data.total / data.per_page));
+  $("pageinfo").textContent =
+    `${data.total} trabajo(s) · página ${data.page} de ${pages}`;
+  $("prev").disabled = data.page <= 1;
+  $("next").disabled = data.page >= pages;
+}
+
+async function loadFilters() {
+  const data = await (await fetch("/api/filters")).json();
+  const fill = (sel, values, keep) => {
+    const el = $(sel), current = el.value;
+    el.innerHTML = `<option value="">${keep}</option>` +
+      values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    el.value = current;
+  };
+  fill("f-printer", data.printers, "Todas");
+  fill("f-user", data.users, "Todos");
+  const st = $("f-state"), current = st.value;
+  st.innerHTML = `<option value="">Todos</option>` +
+    Object.entries(data.states)
+      .map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
+  st.value = current;
+}
+
+$("btn-apply").onclick = () => { page = 1; loadJobs(); };
+$("btn-clear").onclick = () => {
+  $("filters").reset(); page = 1; loadJobs();
+};
+$("btn-csv").onclick = () => {
+  window.location = "/api/export.csv?" + queryParams();
+};
+$("f-q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { page = 1; loadJobs(); }
+});
+$("prev").onclick = () => { if (page > 1) { page--; loadJobs(); } };
+$("next").onclick = () => { page++; loadJobs(); };
+
+loadQueues();
+loadFilters();
+loadJobs();
+setInterval(loadQueues, 5000);
+setInterval(loadFilters, 60000);
+setInterval(() => { if (page === 1) loadJobs(); }, 15000);
+</script>
+</body>
+</html>
