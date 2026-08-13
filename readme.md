@@ -23,27 +23,72 @@ entre una interfaz padre y sus propias macvlan hijas. En la practica el NAS no
 puede hacerle ping al print server ni abrir el panel web.
 
 Se resuelve dandole al host su propia macvlan ("shim"), porque dos macvlan
-hermanas si se comunican entre si. El script esta en
-[scripts/synology-shim.sh](scripts/synology-shim.sh): hay que ajustar las tres
-variables del principio y dejarlo en el **Programador de tareas** de DSM como
-tarea activada **Al iniciar**, con usuario **root** (no usar una unit de systemd:
-DSM las pierde en cada actualizacion).
+hermanas si se comunican entre si. El script es
+[scripts/macvlan-shim.sh](scripts/macvlan-shim.sh) y sirve para cualquier host:
+hay que ajustar las **tres variables del principio** (`PARENT`, `SHIM_IP`,
+`CONTAINER_IP`). Lo unico que cambia entre un host y otro es como se hace
+persistente, porque el shim **no sobrevive a un reboot por si solo**.
 
-Notas:
+Reglas comunes a los dos casos:
 
-- La interfaz padre se verifica con `ip -br addr`. Si el NAS tiene Virtual
-  Machine Manager instalado, DSM activa Open vSwitch y la interfaz pasa a
-  llamarse `ovs_eth0` / `ovs_bond0` (se confirma con `ovs-vsctl show`).
+- La interfaz padre se verifica con `ip -br addr` y tiene que ser la misma que se
+  uso como `parent` al crear la red `macvlan_lan`.
 - La IP del shim tiene que estar libre y fuera del rango DHCP del router. Para
   que Docker tampoco la asigne, agregar `--aux-address="shim=<IP_DEL_SHIM>"` al
   `docker network create`.
 - Para probar, desde el host: `ping <IP_CONTAINER>` y
   `curl http://<IP_CONTAINER>:8080/health`.
 
-Este es tambien el motivo por el que **no sirve** cambiar macvlan por
-`network_mode: host` ni por publicacion de puertos: DSM ya ocupa los puertos
-139/445 con su propio servicio SMB, asi que el print server necesita una IP
-propia si o si.
+## Host Synology (DSM)
+
+Panel de control -> Programador de tareas -> Crear -> **Tarea activada**,
+evento **Al iniciar**, usuario **root**, y en "Script definido por el usuario"
+se pega el contenido del script.
+
+**No usar una unit de systemd en DSM**: aunque DSM 7 lo tenga por debajo, las
+units propias se pierden en las actualizaciones del sistema.
+
+Si el NAS tiene Virtual Machine Manager instalado, DSM activa Open vSwitch y la
+interfaz padre pasa a llamarse `ovs_eth0` / `ovs_bond0` (se confirma con
+`ovs-vsctl show`; si el comando falla por falta del socket, no hay OVS).
+
+Ademas, DSM ya ocupa los puertos 139/445 con su propio servicio SMB: por eso en
+Synology **no sirve** reemplazar macvlan por `network_mode: host` ni por
+publicacion de puertos. El print server necesita una IP propia si o si.
+
+## Host Ubuntu (systemd)
+
+```bash
+sudo install -m 755 scripts/macvlan-shim.sh /usr/local/sbin/macvlan-shim.sh
+sudo install -m 644 scripts/macvlan-shim.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now macvlan-shim.service
+sudo systemctl status macvlan-shim.service
+```
+
+La unit es `Type=oneshot` con `RemainAfterExit=yes` (crea la interfaz y termina,
+pero systemd la sigue considerando activa) y corre **antes de docker.service**,
+para que el host pueda alcanzar al contenedor apenas arranca.
+
+Ojo con el nombre de la interfaz: en Ubuntu rara vez es `eth0`, suele ser
+`enp3s0`, `ens18` y similares. Ajustar `PARENT` en el script.
+
+Alternativas en Ubuntu, si se prefiere no usar un script:
+
+- **systemd-networkd**: soporta macvlan de forma nativa con un `.netdev`
+  (`Kind=macvlan`) mas un `MACVLAN=shim` en la `.network` de la interfaz padre.
+  Es lo mas "correcto", pero si la red la maneja netplan hay que meterlo como
+  drop-in sobre el archivo que netplan genera en `/run/systemd/network/`, lo que
+  se vuelve fragil ante cambios de configuracion. **Netplan no soporta macvlan
+  directamente.**
+- **NetworkManager** (tipico en Ubuntu Desktop): se puede hacer todo persistente
+  con un solo comando, sin script ni unit:
+
+  ```bash
+  sudo nmcli con add type macvlan ifname shim dev enp3s0 mode bridge \
+      ip4 192.168.14.159/32 con-name shim
+  sudo nmcli con mod shim +ipv4.routes "192.168.14.231/32"
+  ```
 
 ---
 

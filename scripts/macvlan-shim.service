@@ -1,0 +1,17 @@
+[Unit]
+Description=Shim macvlan para que el host alcance el contenedor smbprinter
+Documentation=https://github.com/raishid/smb-sharing
+# La interfaz padre tiene que estar arriba antes de colgarle la macvlan.
+Wants=network-online.target
+After=network-online.target
+# Antes de Docker: asi el host puede alcanzar al contenedor apenas arranca.
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/macvlan-shim.sh up
+ExecStop=/usr/local/sbin/macvlan-shim.sh down
+
+[Install]
+WantedBy=multi-user.target
