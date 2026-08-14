@@ -88,6 +88,9 @@
            color: var(--muted); }
   .error { background: var(--card); border: 1px solid var(--err); color: var(--err);
            border-radius: 8px; padding: 12px 14px; }
+  .stamp { font-size: 11px; letter-spacing: 0; text-transform: none;
+           color: var(--muted); font-weight: normal; margin-left: 8px; }
+  .stamp.stale { color: var(--err); }
 </style>
 </head>
 <body>
@@ -95,7 +98,7 @@
 <h1>Print Server</h1>
 <p class="sub">Colas de impresión e historial de trabajos · actualiza cada 5 s</p>
 
-<h2>Colas</h2>
+<h2>Colas <span id="qstamp" class="stamp"></span></h2>
 <div id="queues" class="cards"></div>
 
 <h2>Historial</h2>
@@ -111,7 +114,8 @@
   <div><label for="f-q">Buscar</label>
     <input type="search" id="f-q" placeholder="documento, equipo, usuario"></div>
   <button class="primary" id="btn-apply">Filtrar</button>
-  <button id="btn-clear">Limpiar</button>
+  <button id="btn-today">Hoy</button>
+  <button id="btn-all">Ver todo</button>
   <button id="btn-csv">Exportar CSV</button>
 </form>
 
@@ -143,8 +147,14 @@ const esc = (s) => (s ?? "").toString().replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // ---- Colas en vivo -------------------------------------------------------
+// Guarda contra peticiones superpuestas: si una tarda mas que el intervalo de
+// refresco, no se apilan pedidos encima.
+let queuesInFlight = false;
+
 async function loadQueues() {
-  const box = $("queues");
+  if (queuesInFlight) return;
+  queuesInFlight = true;
+  const box = $("queues"), stamp = $("qstamp");
   let data;
   try {
     const res = await fetch("/api/queues");
@@ -153,6 +163,21 @@ async function loadQueues() {
   } catch (err) {
     box.innerHTML = `<div class="error">${esc(err.message)}</div>`;
     return;
+  } finally {
+    queuesInFlight = false;
+  }
+
+  // El backend sirve una foto tomada por el hilo de fondo: si quedo vieja,
+  // cupsd dejo de responder y hay que decirlo en vez de mostrar datos falsos.
+  if (data.error) {
+    stamp.textContent = `sin contacto con CUPS: ${data.error}`;
+    stamp.className = "stamp stale";
+  } else {
+    const age = data.now - data.updated_at;
+    stamp.textContent = data.stale
+      ? `⚠ datos de hace ${age} s — CUPS no responde`
+      : `actualizado hace ${age} s`;
+    stamp.className = data.stale ? "stamp stale" : "stamp";
   }
   if (!data.printers.length) {
     box.innerHTML = `<p class="empty">No hay impresoras configuradas en CUPS.</p>`;
@@ -215,10 +240,19 @@ function queryParams() {
   return p;
 }
 
+let jobsInFlight = false;
+
 async function loadJobs() {
+  if (jobsInFlight) return;
+  jobsInFlight = true;
   const p = queryParams();
   p.set("page", page);
-  const data = await (await fetch("/api/jobs?" + p)).json();
+  let data;
+  try {
+    data = await (await fetch("/api/jobs?" + p)).json();
+  } finally {
+    jobsInFlight = false;
+  }
   $("rows").innerHTML = data.jobs.length ? data.jobs.map((j) => `
     <tr>
       <td>${fmtDate(j.created_at)}</td>
@@ -256,8 +290,22 @@ async function loadFilters() {
   st.value = current;
 }
 
+// Por defecto el historial arranca acotado al dia en curso: es lo que se
+// consulta el 99% de las veces y evita traer meses de trabajos sin necesidad.
+function todayISO() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 10);
+}
+
+function setToday() {
+  $("f-from").value = todayISO();
+  $("f-to").value = todayISO();
+}
+
 $("btn-apply").onclick = () => { page = 1; loadJobs(); };
-$("btn-clear").onclick = () => {
+$("btn-today").onclick = () => { setToday(); page = 1; loadJobs(); };
+$("btn-all").onclick = () => {
   $("filters").reset(); page = 1; loadJobs();
 };
 $("btn-csv").onclick = () => {
@@ -269,6 +317,7 @@ $("f-q").addEventListener("keydown", (e) => {
 $("prev").onclick = () => { if (page > 1) { page--; loadJobs(); } };
 $("next").onclick = () => { page++; loadJobs(); };
 
+setToday();
 loadQueues();
 loadFilters();
 loadJobs();

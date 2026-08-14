@@ -3,7 +3,14 @@
 
 Fuente de verdad del historial: el historial de trabajos de CUPS via IPP
 (Get-Jobs which-jobs=completed), que se vuelca a SQLite para que sobreviva a
-reinicios y a la rotacion/purga que hace el propio cupsd (MaxJobs).
+reinicios y a la purga que hace el propio cupsd (MaxJobs).
+
+Diseno importante: **ninguna peticion HTTP habla con CUPS**. pycups no libera el
+GIL durante las llamadas IPP, asi que una consulta lenta a cupsd congela todo el
+proceso de Python y el panel queda cargando para siempre. Por eso un unico hilo
+de fondo hace todo el I/O contra CUPS y publica una foto en memoria; las rutas
+web solo leen esa foto y SQLite. Las acciones (cancelar, pausar) si necesitan
+una conexion viva, pero corren con timeout para no colgar el request.
 
 El page_log se lee como complemento: con colas raw (-m raw) CUPS no interpreta
 el documento, asi que el conteo de paginas casi siempre es aproximado.
@@ -26,7 +33,13 @@ WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
 DB_PATH = os.environ.get("DB_PATH", "/data/printjobs.db")
 PAGE_LOG = os.environ.get("PAGE_LOG", "/var/log/cups/page_log")
 RETENTION_DAYS = int(os.environ.get("WEB_RETENTION_DAYS", "365"))
-POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "15"))
+
+# Cada cuanto se refresca la foto de las colas (barato: solo trabajos activos).
+POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "5"))
+# Cada cuanto se trae el historial completo de CUPS (caro: hasta MaxJobs filas).
+HISTORY_SECONDS = int(os.environ.get("HISTORY_SECONDS", "60"))
+# Timeout de las acciones interactivas contra CUPS.
+ACTION_TIMEOUT = int(os.environ.get("ACTION_TIMEOUT", "8"))
 
 JOB_ATTRS = [
     "job-id",
@@ -52,6 +65,8 @@ JOB_STATES = {
     8: "aborted",
     9: "completed",
 }
+# A partir de 7 el trabajo ya no cambia mas: no hace falta volver a guardarlo.
+FINAL_STATE = 7
 
 PRINTER_STATES = {3: "idle", 4: "processing", 5: "stopped"}
 
@@ -141,11 +156,37 @@ def cups_connect():
     return cups.Connection()
 
 
+def run_with_timeout(fn, timeout=ACTION_TIMEOUT):
+    """Ejecuta una llamada a CUPS sin arriesgar que el request quede colgado."""
+    box = {}
+
+    def runner():
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # se re-lanza en el hilo que espera
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"CUPS no respondio en {timeout}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def printer_from_uri(uri):
     """ipp://host/printers/sotano -> sotano"""
     if not uri:
         return None
     return uri.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _as_text(value):
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value)
+    return value if value is None else str(value)
 
 
 def normalize_job(job_id, attrs):
@@ -166,12 +207,6 @@ def normalize_job(job_id, attrs):
     )
 
 
-def _as_text(value):
-    if isinstance(value, (list, tuple)):
-        return ",".join(str(v) for v in value)
-    return value if value is None else str(value)
-
-
 UPSERT = """
 INSERT INTO jobs (job_id, created_at, printer, user, host, title, size_kb,
                   impressions, state, state_reasons, started_at, finished_at)
@@ -190,16 +225,21 @@ ON CONFLICT(job_id, created_at) DO UPDATE SET
 """
 
 
-def ingest_jobs(conn):
-    """Vuelca a SQLite los trabajos que CUPS todavia recuerda."""
-    cups_conn = cups_connect()
-    rows = []
-    for which in ("completed", "not-completed"):
-        jobs = cups_conn.getJobs(
-            which_jobs=which, my_jobs=False, requested_attributes=JOB_ATTRS
-        )
-        for job_id, attrs in jobs.items():
-            rows.append(normalize_job(job_id, attrs))
+def store_jobs(conn, jobs, skip_known_final=False):
+    """Guarda en SQLite un dict {job_id: atributos} devuelto por CUPS."""
+    rows = [normalize_job(job_id, attrs) for job_id, attrs in jobs.items()]
+    if skip_known_final:
+        # El historial de CUPS repite siempre los mismos trabajos terminados;
+        # reescribirlos en cada vuelta es puro trabajo al pedo.
+        known = {
+            (r["job_id"], r["created_at"])
+            for r in conn.execute(
+                "SELECT job_id, created_at FROM jobs WHERE state >= ?", (FINAL_STATE,)
+            )
+        }
+        rows = [r for r in rows if (r[0], r[1]) not in known]
+    if not rows:
+        return 0
     with conn:
         conn.executemany(UPSERT, rows)
     return len(rows)
@@ -262,7 +302,7 @@ def ingest_page_log(conn):
             )
             if cur.rowcount == 0:
                 print(
-                    f"[ingest] page_log: sin trabajo para {printer}#{job_id} "
+                    f"[poll] page_log: sin trabajo para {printer}#{job_id} "
                     f"({pages} pag.); CUPS ya lo olvido",
                     flush=True,
                 )
@@ -278,42 +318,15 @@ def purge_old(conn):
         conn.execute("DELETE FROM jobs WHERE created_at < ?", (cutoff,))
 
 
-def ingest_loop():
-    conn = connect_db()
-    last_purge = 0.0
-    while True:
-        try:
-            ingest_jobs(conn)
-            ingest_page_log(conn)
-            if time.time() - last_purge > 3600:
-                purge_old(conn)
-                last_purge = time.time()
-        except Exception as exc:  # el hilo nunca debe morir
-            print(f"[ingest] error: {exc}", flush=True)
-        time.sleep(POLL_SECONDS)
-
-
 # --------------------------------------------------------------------------
-# API
+# Foto en memoria de las colas (lo unico que sirve /api/queues)
 # --------------------------------------------------------------------------
 
-
-@app.route("/")
-def index():
-    return render_template("index.html")
+_snapshot = {"printers": [], "updated_at": 0, "error": "iniciando"}
+_snapshot_lock = threading.Lock()
 
 
-@app.route("/api/queues")
-def api_queues():
-    try:
-        conn = cups_connect()
-        printers = conn.getPrinters()
-        active = conn.getJobs(
-            which_jobs="not-completed", my_jobs=False, requested_attributes=JOB_ATTRS
-        )
-    except Exception as exc:
-        return jsonify({"error": f"No se pudo conectar a CUPS: {exc}"}), 503
-
+def build_snapshot(printers, active):
     by_printer = {}
     for job_id, attrs in active.items():
         name = printer_from_uri(attrs.get("job-printer-uri"))
@@ -343,7 +356,66 @@ def api_queues():
                 "jobs": jobs,
             }
         )
-    return jsonify({"printers": result, "now": int(time.time())})
+    return result
+
+
+def poll_loop():
+    """Unico lugar del proceso que habla con CUPS de forma periodica."""
+    conn = connect_db()
+    last_history = 0.0
+    last_purge = 0.0
+    while True:
+        try:
+            cups_conn = cups_connect()
+            active = cups_conn.getJobs(
+                which_jobs="not-completed", my_jobs=False, requested_attributes=JOB_ATTRS
+            )
+            printers = cups_conn.getPrinters()
+            with _snapshot_lock:
+                _snapshot["printers"] = build_snapshot(printers, active)
+                _snapshot["updated_at"] = int(time.time())
+                _snapshot["error"] = None
+            store_jobs(conn, active)
+
+            now = time.time()
+            if now - last_history > HISTORY_SECONDS:
+                completed = cups_conn.getJobs(
+                    which_jobs="completed",
+                    my_jobs=False,
+                    requested_attributes=JOB_ATTRS,
+                )
+                store_jobs(conn, completed, skip_known_final=True)
+                ingest_page_log(conn)
+                last_history = now
+            if now - last_purge > 3600:
+                purge_old(conn)
+                last_purge = now
+        except Exception as exc:  # el hilo nunca debe morir
+            with _snapshot_lock:
+                _snapshot["error"] = str(exc)
+            print(f"[poll] error: {exc}", flush=True)
+        time.sleep(POLL_SECONDS)
+
+
+# --------------------------------------------------------------------------
+# API
+# --------------------------------------------------------------------------
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/queues")
+def api_queues():
+    with _snapshot_lock:
+        snap = dict(_snapshot)
+        snap["printers"] = list(_snapshot["printers"])
+    snap["now"] = int(time.time())
+    # Si la foto quedo vieja, cupsd dejo de responder: hay que avisarlo.
+    snap["stale"] = snap["now"] - snap["updated_at"] > max(30, POLL_SECONDS * 4)
+    return jsonify(snap)
 
 
 def build_filters(args):
@@ -458,7 +530,7 @@ def api_export():
 @app.route("/api/jobs/<int:job_id>/cancel", methods=["POST"])
 def api_cancel(job_id):
     try:
-        cups_connect().cancelJob(job_id)
+        run_with_timeout(lambda: cups_connect().cancelJob(job_id))
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify({"ok": True})
@@ -466,16 +538,20 @@ def api_cancel(job_id):
 
 @app.route("/api/printers/<name>/<action>", methods=["POST"])
 def api_printer_action(name, action):
-    try:
+    def do():
         conn = cups_connect()
         if action == "enable":
-            conn.enablePrinter(name)
-        elif action == "disable":
-            conn.disablePrinter(name)
-        elif action == "purge":
-            conn.cancelAllJobs(name)
-        else:
-            return jsonify({"error": "accion desconocida"}), 400
+            return conn.enablePrinter(name)
+        if action == "disable":
+            return conn.disablePrinter(name)
+        if action == "purge":
+            return conn.cancelAllJobs(name)
+        raise ValueError("accion desconocida")
+
+    try:
+        run_with_timeout(do)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify({"ok": True})
@@ -483,14 +559,16 @@ def api_printer_action(name, action):
 
 @app.route("/health")
 def health():
-    try:
-        cups_connect().getPrinters()
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 503
-    return jsonify({"ok": True})
+    """Sano = el hilo de fondo esta hablando con CUPS. No consulta CUPS aca."""
+    with _snapshot_lock:
+        error = _snapshot["error"]
+        updated = _snapshot["updated_at"]
+    age = int(time.time()) - updated
+    ok = error is None and age <= max(30, POLL_SECONDS * 4)
+    return jsonify({"ok": ok, "error": error, "age_seconds": age}), (200 if ok else 503)
 
 
 if __name__ == "__main__":
     init_db()
-    threading.Thread(target=ingest_loop, daemon=True).start()
+    threading.Thread(target=poll_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=WEB_PORT, threaded=True)
