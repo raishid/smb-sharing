@@ -15,7 +15,37 @@ para asi cuando se conecta por \\NETBIOS_NAME\impersora conecte correcatmente y 
 
 ---
 
+# QUE VARIANTE USAR
+
+| Host | Archivo | Por que |
+|---|---|---|
+| Synology / fisico con SMB propio | `docker-compose.yaml` (macvlan) | DSM ya ocupa 139/445: el print server necesita IP propia |
+| VM dedicada (Hyper-V, VMware) | `docker-compose.host.yaml` | Los puertos estan libres y macvlan da problemas sobre hipervisores |
+
+**Macvlan sobre un hipervisor da problemas.** El contenedor emite tramas con una
+MAC distinta a la de la VM y el switch virtual las trata mal: el trafico chico
+(ping, respuestas de pocos bytes) pasa perfecto, pero las transferencias grandes
+se arrastran a cientos de bytes por segundo y mueren a la mitad, de forma
+intermitente. En Hyper-V hay que habilitar "suplantacion de direcciones MAC",
+y aun asi puede fallar. Medido en un caso real: 1,4 MB/s contra la IP de la VM
+contra 517 bytes/s contra la IP macvlan del contenedor, con el mismo cliente y
+el mismo archivo.
+
+Si el host es una VM dedicada, lo simple es no usar macvlan:
+
+```bash
+ss -lntp | grep -E ':(139|445|631|8080)\b'   # tienen que estar libres
+docker compose -f docker-compose.host.yaml up -d --build
+```
+
+El registro A del DNS pasa a apuntar a la IP del host, y el panel queda en
+`http://<IP_DEL_HOST>:8080`. No hace falta ni el shim ni ajustar la MTU.
+
+---
+
 # ACCESO DEL HOST AL CONTENEDOR (shim macvlan)
+
+> Solo aplica a la variante macvlan (`docker-compose.yaml`).
 
 Con macvlan **el host no puede hablar con el contenedor**, aunque el resto de la
 LAN si lo vea. No es un problema de configuracion: el kernel bloquea el trafico

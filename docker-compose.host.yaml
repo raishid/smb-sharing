@@ -1,0 +1,69 @@
+# Variante SIN macvlan: el contenedor usa directamente la pila de red del host.
+#
+# Cuando usar esta y no docker-compose.yaml:
+#   - El host es una maquina dedicada (VM o fisica) con los puertos 139/445/631
+#     libres, es decir, no corre otro servidor SMB. Verificar con:
+#       ss -lntp | grep -E ':(139|445|631|8080)\b'
+#   - El host es una VM sobre Hyper-V, VMware o similar. Macvlan hace que el
+#     contenedor emita tramas con una MAC propia y los hipervisores las tratan
+#     mal: el trafico chico pasa pero las transferencias grandes se arrastran o
+#     mueren, de forma intermitente.
+#
+# Diferencias respecto de la variante macvlan:
+#   - El print server usa la IP del host. El registro A del DNS tiene que
+#     apuntar ahi, no a una IP propia del contenedor.
+#   - El panel queda en http://<IP_DEL_HOST>:8080
+#   - No hace falta el shim de scripts/macvlan-shim.sh: el host alcanza al
+#     contenedor de forma nativa.
+#   - No hace falta ajustar la MTU: se usa la del host.
+#
+# Uso:
+#   docker compose -f docker-compose.host.yaml up -d --build
+
+services:
+  smbprinter:
+    build: .
+    container_name: smbprinter
+    restart: always
+    network_mode: host
+    environment:
+      - NETBIOS_NAME=${NETBIOS_NAME:-printserver}
+      - PRINTERS=${PRINTERS}
+      - TZ=${TZ:-UTC}
+      # Vacio a proposito: con network_mode host, eth0 es la interfaz del host
+      # y no hay que tocarle la MTU. Tampoco se agrega cap_add NET_ADMIN.
+      - MTU=
+    volumes:
+      - ./cupsd.conf:/etc/cups/cupsd.conf:ro
+      - cups_logs:/var/log/cups
+      - cups_spool:/var/spool/cups
+    healthcheck:
+      test: ["CMD-SHELL", "lpstat -r | grep -q 'is running'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  printweb:
+    build: ./web
+    container_name: printweb
+    restart: always
+    depends_on:
+      - smbprinter
+    network_mode: host
+    environment:
+      - CUPS_HOST=localhost
+      - CUPS_PORT=631
+      - WEB_PORT=${WEB_PORT:-8080}
+      - WEB_RETENTION_DAYS=${WEB_RETENTION_DAYS:-365}
+      - TZ=${TZ:-UTC}
+      - DB_PATH=/data/printjobs.db
+      - PAGE_LOG=/var/log/cups/page_log
+    volumes:
+      - cups_logs:/var/log/cups:ro
+      - printweb_data:/data
+
+volumes:
+  cups_logs:
+  cups_spool:
+  printweb_data:
