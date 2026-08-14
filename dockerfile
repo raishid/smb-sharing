@@ -9,6 +9,7 @@ RUN apt-get update && \
       cups cups-client cups-bsd \
       printer-driver-all \
       tzdata \
+      iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Crear rutas base (el entrypoint las vuelve a asegurar igual)

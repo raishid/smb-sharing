@@ -13,6 +13,16 @@ mkdir -p /var/spool/cups /var/spool/samba /var/log/cups /var/log/samba
 mkdir -p /var/lib/samba/private /var/cache/samba /run/samba
 chmod 0755 /run/samba
 
+# El driver macvlan de Docker ignora com.docker.network.driver.mtu, asi que la
+# MTU se ajusta aca. Solo hace falta cuando los clientes llegan por un tunel o
+# VPN con MTU reducida: sin esto las transferencias grandes (paginas web,
+# trabajos de impresion pesados) se cortan a la mitad.
+if [ -n "${MTU:-}" ]; then
+  echo "==== Ajustando MTU de eth0 a ${MTU} ===="
+  ip link set eth0 mtu "$MTU" || \
+    echo "ADVERTENCIA: no se pudo ajustar la MTU (falta cap_add NET_ADMIN?)" >&2
+fi
+
 # Crear usuario guest para Samba
 useradd -M -s /sbin/nologin nobody 2>/dev/null || true
 (echo ""; echo "") | smbpasswd -a -s nobody 2>/dev/null || true

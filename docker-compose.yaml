@@ -7,6 +7,10 @@ services:
       - NETBIOS_NAME=${NETBIOS_NAME:-printserver}
       - PRINTERS=${PRINTERS}
       - TZ=${TZ:-UTC}
+      - MTU=${MTU:-}
+    # Necesario para que el entrypoint pueda ajustar la MTU de eth0.
+    cap_add:
+      - NET_ADMIN
     volumes:
       - ./cupsd.conf:/etc/cups/cupsd.conf:ro
       - cups_logs:/var/log/cups
