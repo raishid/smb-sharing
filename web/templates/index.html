@@ -202,6 +202,7 @@ async function loadQueues() {
         </li>`).join("")}</ul>`
         : `<p class="empty">Sin trabajos en cola</p>`}
       <div style="margin-top:10px">
+        <button class="link" onclick="testPrint('${esc(p.name)}')">Prueba</button>
         <button class="link" onclick="printerAction('${esc(p.name)}','${
           p.state === "stopped" ? "enable" : "disable"}')">${
           p.state === "stopped" ? "Reanudar" : "Pausar"}</button>
@@ -214,6 +215,16 @@ async function cancelJob(id) {
   if (!confirm(`¿Cancelar el trabajo #${id}?`)) return;
   const res = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
   if (!res.ok) alert("Error: " + ((await res.json()).error || res.statusText));
+  loadQueues();
+}
+
+async function testPrint(name) {
+  if (!confirm(`¿Enviar una página de prueba a ${name}?`)) return;
+  const res = await fetch(`/api/printers/${encodeURIComponent(name)}/test`,
+                          { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) alert("Error: " + (data.error || res.statusText));
+  else alert(`Prueba enviada a ${name} (trabajo #${data.job_id}).`);
   loadQueues();
 }
 

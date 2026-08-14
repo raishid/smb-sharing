@@ -21,6 +21,7 @@ import io
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 
@@ -555,6 +556,51 @@ def api_printer_action(name, action):
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify({"ok": True})
+
+
+def build_test_page(name):
+    """Pagina de prueba para colas raw.
+
+    Va en ASCII puro y con CRLF a proposito: las colas son raw, o sea que los
+    bytes llegan tal cual a la impresora. Las matriciales y las de tickets
+    interpretan el texto con su propia tabla de caracteres, asi que cualquier
+    acento saldria como basura, y muchas necesitan CR ademas de LF para no
+    imprimir en escalera. El form feed del final expulsa la hoja en las laser.
+    """
+    stamp = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+    lines = [
+        "================================",
+        "      PRUEBA DE IMPRESION",
+        "================================",
+        f"Impresora : {name}",
+        f"Fecha     : {stamp}",
+        "--------------------------------",
+        "Si lee este texto, la cola",
+        "funciona correctamente.",
+        "================================",
+    ]
+    # Lineas en blanco extra para que las impresoras de tickets saquen el papel
+    # mas alla del corte.
+    return ("\r\n".join(lines) + "\r\n" * 5 + "\f").encode("ascii", "replace")
+
+
+@app.route("/api/printers/<name>/test", methods=["POST"])
+def api_test_print(name):
+    tmp = tempfile.NamedTemporaryFile(prefix="prueba-", suffix=".txt", delete=False)
+    try:
+        tmp.write(build_test_page(name))
+        tmp.close()
+        job_id = run_with_timeout(
+            lambda: cups_connect().printFile(name, tmp.name, "Prueba de impresion", {})
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    return jsonify({"ok": True, "job_id": job_id})
 
 
 @app.route("/health")
